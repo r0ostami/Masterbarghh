@@ -483,17 +483,7 @@ option{background:#111824;color:#fff}
   };
   const sessionResult = user => ({ user, csrf_token: 'mb', free_listings: true, demo_billing: false, demo_data: false });
 
-  const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRhd3p5Znh2b2VwYXRkd3B6aXJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5NjA0OTAsImV4cCI6MjEwODUzNjQ5MH0.VkdtUtA_dfn6ahSlp1lga6_09POOtlsaFYvbuN3inCY';
-  const otp = async body => {
-    const r = await realFetch(SB + '/functions/v1/sms-otp', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: KEY, Authorization: 'Bearer ' + ANON }, body: JSON.stringify(body) });
-    let j = {}; try { j = await r.json(); } catch (_) {}
-    return { ok: r.ok, status: r.status, j };
-  };
   const handle = async (p, method, d, url) => {
-    if (p === '/api/send-code' && method === 'POST') {
-      const r = await otp({ action: 'send', phone: digits(d.phone) });
-      return r.ok ? reply(200, { ok: true }) : fail(r.status || 500, (r.j && r.j.error) || 'ارسال کد انجام نشد.');
-    }
     if (p === '/api/session') {
       if (!sess) return reply(200, sessionResult(null));
       const tok = await ensureToken(); if (!tok) return reply(200, sessionResult(null));
@@ -514,11 +504,16 @@ option{background:#111824;color:#fff}
       if (!/^09\d{9}$/.test(phone)) return fail(400, 'شماره باید ۱۱ رقم و با ۰۹ شروع شود.');
       if ((d.password || '').length < 8) return fail(400, 'رمز عبور باید حداقل ۸ نویسه باشد.');
       if (!d.name || !d.province || !d.city) return fail(400, 'اطلاعات خواسته‌شده را کامل کنید.');
-      const r = await otp({ action: 'register', phone, code: digits(d.code), password: d.password, name: String(d.name).trim(), role: d.role === 'contractor' ? 'contractor' : 'lineman', province: d.province, city: d.city, specialties: Array.isArray(d.specialties) ? d.specialties : [] });
-      if (!r.ok) return fail(r.status || 400, (r.j && r.j.error) || 'ثبت‌نام انجام نشد. دوباره تلاش کنید.');
-      const li = await authCall('token?grant_type=password', { email: phone + EMAIL_DOMAIN, password: d.password });
-      if (!li.ok || !li.j.access_token) return fail(503, 'ثبت‌نام انجام شد؛ لطفاً وارد شوید.');
-      saveSess(toSess(li.j));
+      const r = await authCall('signup', { email: phone + EMAIL_DOMAIN, password: d.password, data: { name: String(d.name).trim(), role: d.role === 'contractor' ? 'contractor' : 'lineman', phone } });
+      if (!r.ok) {
+        const m = JSON.stringify(r.j);
+        if (/already|registered|exists/i.test(m)) return fail(409, 'این شماره قبلاً ثبت‌نام کرده است؛ وارد شوید.');
+        if (r.status === 429) return fail(429, 'تعداد تلاش‌ها زیاد است. کمی بعد دوباره امتحان کنید.');
+        return fail(400, 'ثبت‌نام انجام نشد. اطلاعات را بررسی و دوباره تلاش کنید.');
+      }
+      if (!r.j.access_token) return fail(503, 'ثبت‌نام انجام شد ولی ورود خودکار فعال نیست. چند لحظه بعد وارد شوید.');
+      saveSess(toSess(r.j));
+      await rest('profiles?id=eq.' + sess.uid, { method: 'PATCH', body: { province: d.province, city: d.city, specialties: Array.isArray(d.specialties) ? d.specialties : [] } });
       const u = await userObj(sess.uid); if (!u) return fail(500, 'پروفایل ساخته نشد.');
       return reply(201, sessionResult(u));
     }
@@ -898,7 +893,7 @@ function messagesPage(){const c=state.conversations.find(x=>x.id===state.selecte
 
 function authForm(){
   const signup=state.authTab==='register';
-  return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-heading"><div class="modal-inner"><button class="modal-close" data-action="close-modal" aria-label="بستن">${icon('close')}</button><div class="modal-logo"><span class="brand-mark">${icon('bolt')}</span> مستربرق</div><h2 id="auth-heading">${signup?'به جمع اهل برق خوش اومدی!':'خوش اومدی، همکار!'}</h2><p class="modal-sub">${signup?(state.freeListings?'عضو شو و آگهی‌هات رو رایگان ثبت کن.':'عضو شو و اولین آگهی‌ات رو رایگان ثبت کن.'):'با شماره موبایل و رمز عبور وارد حساب خودت شو.'}</p><div class="auth-tabs" role="tablist"><button class="auth-tab ${!signup?'active':''}" data-action="auth-tab" data-tab="login" role="tab" aria-selected="${!signup}">ورود</button><button class="auth-tab ${signup?'active':''}" data-action="auth-tab" data-tab="register" role="tab" aria-selected="${signup}">ثبت‌نام</button></div><form class="auth-form" id="auth-form" novalidate>${signup?`<div class="field"><label class="label" for="auth-name">نام یا نام گروه</label><input class="input" id="auth-name" name="name" maxlength="60" autocomplete="name" placeholder="نام شما یا نام اکیپ" required></div><div class="field"><label class="label">نوع فعالیت</label><div class="choice-grid">${choice('role','lineman','سیمبان / استادکار',true)}${choice('role','contractor','پیمانکار / کارفرما',false)}</div></div>`:''}<div class="field"><label class="label" for="auth-phone">شماره موبایل</label><input class="input" id="auth-phone" name="phone" type="tel" inputmode="numeric" dir="ltr" autocomplete="username" placeholder="۰۹۱۲۱۲۳۴۵۶۷" maxlength="18" required></div>${signup?`<div class="field"><label class="label" for="auth-code">کد تأیید پیامکی</label><div style="display:flex;gap:8px"><input class="input" id="auth-code" name="code" type="text" inputmode="numeric" dir="ltr" autocomplete="one-time-code" maxlength="5" pattern="[0-9۰-۹]{5}" placeholder="کد ۵ رقمی" required style="flex:1"><button type="button" class="btn btn-dark" id="send-code-btn" data-action="send-code">ارسال کد</button></div><small class="hint">برای اطمینان از فعال بودن شماره، یک کد پیامکی برایتان می‌فرستیم.</small></div>`:''}<div class="field"><label class="label" for="auth-password">رمز عبور ${signup?'<span class="hint" style="display:inline">(حداقل ۸ نویسه)</span>':''}</label><input class="input" id="auth-password" name="password" type="password" dir="ltr" autocomplete="${signup?'new-password':'current-password'}" placeholder="${signup?'حداقل ۸ نویسه':'رمز عبور'}" minlength="8" maxlength="128" required></div>${signup?`${locationFields('','')}<div class="field"><label class="label">تخصص‌ها <span class="hint" style="display:inline">(اختیاری)</span></label>${specialtyChoices([])}</div>`:''}<div id="auth-error" hidden></div><button class="btn btn-primary btn-wide" type="submit">${signup?(state.freeListings?'ساخت حساب و ثبت آگهی رایگان':'ساخت حساب و دریافت آگهی رایگان'):'ورود به حساب'} ${icon('arrowLeft')}</button></form>${!signup&&state.demoData?`<div class="auth-divider">یا برای بررسی سامانه</div><button class="btn demo-login" data-action="demo-login">${icon('eye')} ورود به حساب آزمایشی مشترک</button>`:''}<p class="auth-privacy">${icon('shield')} بدون ایمیل؛ شماره شما نمایش عمومی ندارد.</p></div></section></div>`;
+  return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-heading"><div class="modal-inner"><button class="modal-close" data-action="close-modal" aria-label="بستن">${icon('close')}</button><div class="modal-logo"><span class="brand-mark">${icon('bolt')}</span> مستربرق</div><h2 id="auth-heading">${signup?'به جمع اهل برق خوش اومدی!':'خوش اومدی، همکار!'}</h2><p class="modal-sub">${signup?(state.freeListings?'عضو شو و آگهی‌هات رو رایگان ثبت کن.':'عضو شو و اولین آگهی‌ات رو رایگان ثبت کن.'):'با شماره موبایل و رمز عبور وارد حساب خودت شو.'}</p><div class="auth-tabs" role="tablist"><button class="auth-tab ${!signup?'active':''}" data-action="auth-tab" data-tab="login" role="tab" aria-selected="${!signup}">ورود</button><button class="auth-tab ${signup?'active':''}" data-action="auth-tab" data-tab="register" role="tab" aria-selected="${signup}">ثبت‌نام</button></div><form class="auth-form" id="auth-form" novalidate>${signup?`<div class="field"><label class="label" for="auth-name">نام یا نام گروه</label><input class="input" id="auth-name" name="name" maxlength="60" autocomplete="name" placeholder="نام شما یا نام اکیپ" required></div><div class="field"><label class="label">نوع فعالیت</label><div class="choice-grid">${choice('role','lineman','سیمبان / استادکار',true)}${choice('role','contractor','پیمانکار / کارفرما',false)}</div></div>`:''}<div class="field"><label class="label" for="auth-phone">شماره موبایل</label><input class="input" id="auth-phone" name="phone" type="tel" inputmode="numeric" dir="ltr" autocomplete="username" placeholder="۰۹۱۲۱۲۳۴۵۶۷" maxlength="18" required></div><div class="field"><label class="label" for="auth-password">رمز عبور ${signup?'<span class="hint" style="display:inline">(حداقل ۸ نویسه)</span>':''}</label><input class="input" id="auth-password" name="password" type="password" dir="ltr" autocomplete="${signup?'new-password':'current-password'}" placeholder="${signup?'حداقل ۸ نویسه':'رمز عبور'}" minlength="8" maxlength="128" required></div>${signup?`${locationFields('','')}<div class="field"><label class="label">تخصص‌ها <span class="hint" style="display:inline">(اختیاری)</span></label>${specialtyChoices([])}</div>`:''}<div id="auth-error" hidden></div><button class="btn btn-primary btn-wide" type="submit">${signup?(state.freeListings?'ساخت حساب و ثبت آگهی رایگان':'ساخت حساب و دریافت آگهی رایگان'):'ورود به حساب'} ${icon('arrowLeft')}</button></form>${!signup&&state.demoData?`<div class="auth-divider">یا برای بررسی سامانه</div><button class="btn demo-login" data-action="demo-login">${icon('eye')} ورود به حساب آزمایشی مشترک</button>`:''}<p class="auth-privacy">${icon('shield')} بدون ایمیل؛ شماره شما نمایش عمومی ندارد.</p></div></section></div>`;
 }
 function openAuth(tab='login'){state.modal='auth';state.authTab=tab;renderModal();setTimeout(()=>$('#auth-form input')?.focus(),20);}
 function confirmModal(){
@@ -934,17 +929,6 @@ document.addEventListener('click', async event=>{
   try {
     if(action==='navigate'){navigate(el.dataset.page);return;}
     if(action==='auth'){state.returnTo=state.page;openAuth(el.dataset.tab||'login');return;}
-    if(action==='send-code'){
-      const ph=document.querySelector('#auth-phone')?.value||'';
-      el.disabled=true;
-      try{
-        await api('/api/send-code',{method:'POST',data:{phone:ph}});
-        toast('کد تأیید پیامک شد.');document.querySelector('#auth-code')?.focus();
-        let left=60;el.textContent='ارسال دوباره ('+fa(left)+')';
-        const t=setInterval(()=>{left--;const b=document.querySelector('#send-code-btn');if(!b){clearInterval(t);return;}if(left<=0){clearInterval(t);b.disabled=false;b.textContent='ارسال دوباره';}else b.textContent='ارسال دوباره ('+fa(left)+')';},1000);
-      }catch(e){el.disabled=false;showError('#auth-error',e.message);}
-      return;
-    }
     if(action==='auth-tab'){state.authTab=el.dataset.tab;renderModal();return;}
     if(action==='close-modal'||action==='backdrop'){closeModal();return;}
     if(action==='about'){askConfirm('about');return;}
