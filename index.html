@@ -476,10 +476,11 @@ option{background:#111824;color:#fff}
     const p = await rest('profiles?id=eq.' + uid + '&select=*');
     if (!p.ok || !p.j || !p.j[0]) return null;
     const a = await rest('listings?owner=eq.' + uid + '&select=id');
+    const adm = await rest('rpc/is_admin', { method: 'POST', body: {} });
     const x = p.j[0];
     return { id: x.id, phone: x.phone, name: x.name, role: x.role, province: x.province || '', city: x.city || '', specialties: x.specialties || [],
       ads_used: a.ok && Array.isArray(a.j) ? a.j.length : 0, free_available: false, ad_credits: 0, bump_credits: 0, gold_active: true, gold_until: null,
-      package_badge: false, unread: 0 };
+      package_badge: false, unread: 0, is_admin: adm.ok && adm.j === true };
   };
   const sessionResult = user => ({ user, csrf_token: 'mb', free_listings: true, demo_billing: false, demo_data: false });
 
@@ -531,6 +532,16 @@ option{background:#111824;color:#fff}
       if (!r.ok) return dbError(r);
       return reply(200, { user: await userObj(uid) });
     }
+    if (p === '/api/admin' && method === 'GET') {
+      const [st, us, ls] = await Promise.all([rest('rpc/admin_stats', { method: 'POST', body: {} }), rest('rpc/admin_list_users', { method: 'POST', body: {} }), rest('listings?select=*&order=created_at.desc&limit=300')]);
+      if (!st.ok || !us.ok) return fail(403, 'دسترسی ندارید.');
+      const owners = await loadOwners((ls.j || []).map(x => x.owner));
+      return reply(200, { stats: st.j, users: us.j, listings: (ls.j || []).map(x => fromDb(x, owners, uid)) });
+    }
+    const am1 = p.match(/^\/api\/admin\/listings\/([0-9a-fA-F-]{36})$/);
+    if (am1 && method === 'DELETE') { const r = await rest('listings?id=eq.' + am1[1], { method: 'DELETE' }); return r.ok ? reply(200, { ok: true }) : fail(403, 'حذف انجام نشد.'); }
+    const am2 = p.match(/^\/api\/admin\/users\/([0-9a-fA-F-]{36})$/);
+    if (am2 && method === 'POST') { const r = await rest('rpc/admin_set_banned', { method: 'POST', body: { p_user: am2[1], p_banned: !!d.banned } }); return r.ok ? reply(200, { ok: true }) : fail(r.status === 400 ? 400 : 403, 'انجام نشد.'); }
     if (p === '/api/subscriptions') return reply(200, { subscriptions: [] });
     if (p === '/api/subscriptions/demo') return fail(503, 'همهٔ آگهی‌ها فعلاً رایگان است.');
 
@@ -740,9 +751,9 @@ async function api(path, options={}) {
   }
   return data;
 }
-function protectedRoute(route) {return route==='create'||route==='messages'||route==='profile'||route==='mine'||route.startsWith('listing/')||route.startsWith('edit/');}
+function protectedRoute(route) {return route==='admin'||route==='create'||route==='messages'||route==='profile'||route==='mine'||route.startsWith('listing/')||route.startsWith('edit/');}
 function normalizeRoute(raw) {
-  if(['home','jobs','plans','create','messages','profile','mine'].includes(raw)) return raw;
+  if(['home','jobs','plans','create','messages','profile','mine','admin'].includes(raw)) return raw;
   if(/^(listing|edit)\/[0-9a-fA-F-]{36}$/.test(raw)) return raw;
   return 'home';
 }
@@ -767,6 +778,7 @@ async function loadRoute(route) {
   render();
   try {
     if((route==='home'||route==='jobs') && state.user) await fetchListings(route==='home');
+    if(route==='admin') { if(!state.user?.is_admin){state.page='home';history.replaceState(null,'','#home');render();return;} await loadAdmin(); }
     if(route==='mine') { const d=await api('/api/listings?mine=1'); if(state.page===route) state.listings=d.listings; }
     if(route.startsWith('listing/')) { const id=route.split('/')[1]; const d=await api('/api/listings/'+id); if(state.page===route) state.detail=d.listing; }
     if(route.startsWith('edit/')) {
@@ -797,7 +809,7 @@ function renderHeader() {
   const current=state.page;
   const active = id => (id==='home'&&current==='home')||(id==='jobs'&&(current==='jobs'||current.startsWith('listing/')))||(id==='plans'&&current==='plans')||(id==='messages'&&current==='messages');
   const nav=(id,label,extra='')=>`<button class="nav-link ${active(id)?'active':''} ${extra}" data-action="navigate" data-page="${id}">${label}${id==='messages'&&state.user?.unread?`<span class="nav-unread">${fa(state.user.unread)}</span>`:''}</button>`;
-  $('#site-header').innerHTML=`<div class="container header-inner">${logo()}<nav class="desktop-nav" aria-label="منوی اصلی">${nav('home','خانه')}${nav('jobs','فرصت‌های کاری')}${state.freeListings?'':nav('plans','بسته‌های عضویت')}${nav('messages','پیام‌ها','nav-extra')}</nav><div class="header-actions">${state.user?`<button class="btn btn-ghost header-user" data-action="navigate" data-page="profile" aria-label="حساب کاربری ${esc(state.user.name)}"><span class="avatar small">${initial(state.user.name)}</span><span class="user-name">${esc(state.user.name)}</span>${icon('chevronDown')}</button>`:`<button class="btn btn-ghost header-login" data-action="auth" data-tab="login">ورود / ثبت‌نام</button>`}<button class="btn btn-primary header-register" data-action="navigate" data-page="create">${icon('plus')} ${!state.freeListings && state.user && !state.user.free_available?'ثبت آگهی':'ثبت آگهی رایگان'}</button></div></div>`;
+  $('#site-header').innerHTML=`<div class="container header-inner">${logo()}<nav class="desktop-nav" aria-label="منوی اصلی">${nav('home','خانه')}${nav('jobs','فرصت‌های کاری')}${state.freeListings?'':nav('plans','بسته‌های عضویت')}${nav('messages','پیام‌ها','nav-extra')}${state.user?.is_admin?nav('admin','مدیریت'):''}</nav><div class="header-actions">${state.user?`<button class="btn btn-ghost header-user" data-action="navigate" data-page="profile" aria-label="حساب کاربری ${esc(state.user.name)}"><span class="avatar small">${initial(state.user.name)}</span><span class="user-name">${esc(state.user.name)}</span>${icon('chevronDown')}</button>`:`<button class="btn btn-ghost header-login" data-action="auth" data-tab="login">ورود / ثبت‌نام</button>`}<button class="btn btn-primary header-register" data-action="navigate" data-page="create">${icon('plus')} ${!state.freeListings && state.user && !state.user.free_available?'ثبت آگهی':'ثبت آگهی رایگان'}</button></div></div>`;
 }
 function renderMobileNav() {
   const page=state.page;
@@ -819,6 +831,7 @@ function render() {
   else if(page==='messages') html=messagesPage();
   else if(page==='profile') html=profilePage();
   else if(page==='mine') html=minePage();
+  else if(page==='admin') html=adminPage();
   $('#app').innerHTML=html;
   renderFooter();
 }
@@ -886,6 +899,15 @@ function detailPage(){
 function profileNav(active){return `<div class="surface profile-sidebar"><div class="profile-header"><span class="avatar">${initial(state.user.name)}</span><div><strong>${esc(state.user.name)}</strong><small>${ROLE(state.user.role)}</small></div></div><div class="profile-links"><button class="profile-link ${active==='profile'?'active':''}" data-action="navigate" data-page="profile">${icon('user')} اطلاعات حساب</button><button class="profile-link ${active==='mine'?'active':''}" data-action="navigate" data-page="mine">${icon('list')} آگهی‌های من</button><button class="profile-link" data-action="navigate" data-page="messages">${icon('message')} گفتگوهای من</button>${state.freeListings?'':`<button class="profile-link" data-action="navigate" data-page="plans">${icon('award')} بسته‌های عضویت</button>`}<button class="profile-link logout" data-action="logout">${icon('logout')} خروج از حساب</button></div></div>`;}
 function stats(){return `<div class="profile-cards"><div class="profile-stat"><small>سهمیه قابل استفاده</small><strong>${quotaText()}</strong></div><div class="profile-stat"><small>آگهی ثبت‌شده</small><strong>${fa(state.user.ads_used)}</strong></div><div class="profile-stat"><small>${state.freeListings?'هزینه ثبت آگهی':'اعتبار نردبان'}</small><strong>${state.freeListings?'رایگان':fa(state.user.bump_credits)}</strong></div></div>`;}
 function profilePage(){const u=state.user;return `<div class="container page">${bread('حساب کاربری')}<div class="page-heading"><div><h1>حساب کاربری</h1><p>اطلاعات و تخصص‌های خودت را مدیریت کن.</p></div></div><div class="profile-layout">${profileNav('profile')}<div>${stats()}<form class="surface form-card" id="profile-form"><div class="form-section-head"><span class="step-number">${icon('user')}</span><div><h2>اطلاعات و تخصص شما</h2><p>این اطلاعات را هر زمان می‌توانی ویرایش کنی.</p></div></div><div class="field-grid"><div class="field"><label class="label">نام یا نام گروه</label><input class="input" name="name" value="${esc(u.name)}" maxlength="60" required></div><div class="field"><label class="label">شماره موبایل</label><input class="input" value="${esc(fa(u.phone))}" dir="ltr" disabled><span class="hint">فقط برای صاحب حساب قابل مشاهده است.</span></div></div><label class="label" style="margin-top:15px">نوع فعالیت</label><div class="choice-grid">${choice('role','lineman','سیمبان / استادکار خط',u.role==='lineman')}${choice('role','contractor','پیمانکار / کارفرما',u.role==='contractor')}</div><div style="height:15px"></div>${locationFields(u.province,u.city)}<label class="label" style="margin-top:15px">تخصص‌ها</label>${specialtyChoices(u.specialties)}<div id="profile-error" hidden></div><div class="form-footer"><button class="btn btn-primary" type="submit">ذخیره تغییرات</button><small>شماره تماس در آگهی‌ها و گفتگوها نمایش داده نمی‌شود.</small></div></form></div></div></div>`;}
+const adm={stats:null,users:[],listings:[]};
+async function loadAdmin(){const d=await api('/api/admin');adm.stats=d.stats;adm.users=d.users;adm.listings=d.listings;}
+function adminPage(){
+  const s=adm.stats||{};
+  const stat=(l,v)=>`<div class="profile-stat"><small>${l}</small><strong>${fa(v??0)}</strong></div>`;
+  const users=adm.users.map(u=>`<div class="listing-card" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="min-width:0"><strong>${esc(u.name)}</strong> <span class="pill ${u.role==='contractor'?'yellow':''}">${ROLE(u.role)}</span>${u.banned?' <span class="pill red">مسدود</span>':''}<div style="color:#8fa0b3;font-size:11px">${esc(u.province||'')} ${esc(u.city||'')} · ${fa(u.listings)} آگهی · ${dateFa(u.created_at)}</div></div><button class="btn btn-small ${u.banned?'btn-dark':'btn-danger'}" data-action="admin-ban" data-id="${esc(u.id)}" data-ban="${u.banned?'0':'1'}">${u.banned?'رفع مسدودی':'مسدود کردن'}</button></div></div>`).join('');
+  const lst=adm.listings.map(l=>`<div class="listing-card" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="min-width:0"><a href="#listing/${esc(l.id)}" style="font-weight:700">${esc(l.title)}</a>${l.status!=='active'?' <span class="pill muted">منقضی</span>':''}<div style="color:#8fa0b3;font-size:11px">${esc(l.province)} ${esc(l.city)} · ${esc(l.owner?.name||'')} · ${timeAgo(l.created_at)}</div></div><button class="btn btn-small btn-danger" data-action="admin-del" data-id="${esc(l.id)}">حذف</button></div></div>`).join('');
+  return `<div class="container page">${bread('مدیریت')}<div class="page-heading"><div><h1>پنل <span class="heading-accent">مدیریت</span></h1><p>فقط شما این بخش را می‌بینید.</p></div></div><div class="profile-cards" style="grid-template-columns:repeat(3,minmax(0,1fr))">${stat('کاربران',s.users)}${stat('کاربر امروز',s.users_today)}${stat('آگهی فعال',s.listings_active)}${stat('کل آگهی‌ها',s.listings_total)}${stat('گفتگوها',s.conversations)}${stat('پیام‌ها',s.messages)}</div><div class="section"><div class="section-heading"><h2>آگهی‌ها</h2></div><div class="feed-list">${lst||'<div class="inbox-list-empty">آگهی‌ای نیست.</div>'}</div></div><div class="section"><div class="section-heading"><h2>کاربران</h2></div><div class="feed-list">${users||'<div class="inbox-list-empty">کاربری نیست.</div>'}</div></div></div>`;
+}
 function minePage(){let list=state.loading?`<div class="initial-loading" style="height:150px"><span class="spinner"></span></div>`:state.listings.length?state.listings.map(listingCard).join(''):emptyState('هنوز آگهی‌ای ثبت نکرده‌ای',state.freeListings?'ثبت آگهی رایگان است و فقط چند دقیقه زمان می‌برد.':'آگهی اول رایگان است؛ ثبتش فقط چند دقیقه زمان می‌برد.','new-listing','ثبت آگهی');return `<div class="container page">${bread('آگهی‌های من')}<div class="page-heading"><div><h1>آگهی‌های من</h1><p>ویرایش، نردبان و مدیریت آگهی‌های ثبت‌شده</p></div><button class="btn btn-primary" data-action="navigate" data-page="create">${icon('plus')} ثبت آگهی</button></div><div class="profile-layout">${profileNav('mine')}<div>${stats()}<div class="feed-list">${list}</div></div></div></div>`;}
 function conversationEntries(){if(!state.conversations.length)return `<div class="inbox-list-empty">هنوز گفتگویی ندارید. از صفحه یک آگهی، گفتگو را شروع کنید.</div>`;return state.conversations.map(c=>`<button class="conversation-entry ${state.selectedConversation===c.id?'active':''}" data-action="select-conversation" data-id="${c.id}"><span class="avatar small">${initial(c.other_name)}</span><span class="conversation-copy"><strong>${esc(c.other_name)} ${c.is_demo?'· نمونه':''}</strong><span>${esc(c.last_message||c.title)}</span></span>${c.unread?`<span class="conv-unread">${fa(c.unread)}</span>`:''}</button>`).join('');}
 function messageBubbles(){if(!state.messages.length)return `<div class="chat-empty"><span class="lock-icon">${icon('message')}</span><strong>اولین پیام را ارسال کنید</strong><p>درباره جزئیات آگهی و شرایط همکاری، همین‌جا با هم گفتگو کنید.</p></div>`;return state.messages.map(m=>`<div class="message ${m.is_own?'own':''}">${esc(m.body)}<time>${timeFa(m.created_at)}</time></div>`).join('');}
@@ -954,6 +976,8 @@ document.addEventListener('click', async event=>{
       if(state.demoBilling)askConfirm('plan',{plan:el.dataset.plan});return;
     }
     if(action==='logout'){askConfirm('logout');return;}
+    if(action==='admin-del'){if(!confirm('این آگهی حذف شود؟'))return;await api('/api/admin/listings/'+el.dataset.id,{method:'DELETE',data:{}});toast('آگهی حذف شد.');await loadAdmin();render();return;}
+    if(action==='admin-ban'){const ban=el.dataset.ban==='1';if(!confirm(ban?'این کاربر مسدود شود؟ دیگر نمی‌تواند وارد شود.':'مسدودی این کاربر برداشته شود؟'))return;await api('/api/admin/users/'+el.dataset.id,{method:'POST',data:{banned:ban}});toast(ban?'کاربر مسدود شد.':'مسدودی برداشته شد.');await loadAdmin();render();return;}
     if(action==='expire'){askConfirm('expire',{id:el.dataset.id});return;}
     if(action==='bump'){if(!state.user.bump_credits){toast('سهمیه نردبان ندارید. بسته پیمانکاری شامل یک اعتبار نردبان است.','error');return;}askConfirm('bump',{id:el.dataset.id});return;}
     if(action==='confirm'){await performConfirm(el);return;}
